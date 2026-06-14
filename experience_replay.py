@@ -1,6 +1,36 @@
 from collections import deque
 import random
 
+import numpy as np
+import torch
+
+
+def unpack_batch(transitions):
+    """把一批 transition 拆成 DQN 训练需要的 batch tensor。
+
+    输入:
+        [
+            (state, action, next_state, reward, done),
+            ...
+        ]
+
+    输出:
+        states.shape      == [batch_size, state_dim]
+        actions.shape     == [batch_size]
+        next_states.shape == [batch_size, state_dim]
+        rewards.shape     == [batch_size]
+        dones.shape       == [batch_size]
+    """
+    states, actions, next_states, rewards, dones = zip(*transitions)
+
+    return (
+        torch.from_numpy(np.asarray(states, dtype=np.float32)),
+        torch.tensor(actions, dtype=torch.int64),
+        torch.from_numpy(np.asarray(next_states, dtype=np.float32)),
+        torch.tensor(rewards, dtype=torch.float32),
+        torch.tensor(dones, dtype=torch.bool),
+    )
+
 
 class ReplayMemory:
     """DQN 使用的经验回放池。
@@ -58,6 +88,79 @@ class ReplayMemory:
         return len(self.memory)
 
 
+class PrioritizedReplayMemory:
+    """按 TD error 优先采样的经验回放池。
+
+    普通 ReplayMemory 是完全均匀随机抽样。Prioritized Replay 的直觉是:
+        哪些 transition 当前“预测错得更厉害”，就更值得被模型多看几次。
+
+    这里用 proportional prioritization:
+        P(i) = priority_i ** alpha / sum(priority ** alpha)
+
+    beta 用来计算 importance sampling weights，抵消非均匀采样带来的偏差。
+    """
+
+    def __init__(
+        self,
+        maxlen: int,
+        alpha: float = 0.6,
+        priority_epsilon: float = 1e-5,
+        seed: int | None = None,
+    ):
+        self.maxlen = maxlen
+        self.alpha = alpha
+        self.priority_epsilon = priority_epsilon
+        self.memory = []
+        self.priorities = np.zeros(maxlen, dtype=np.float32)
+        self.position = 0
+        self.max_priority = 1.0
+
+        self.rng = np.random.default_rng(seed)
+
+    def append(self, transition):
+        if len(self.memory) < self.maxlen:
+            self.memory.append(transition)
+        else:
+            self.memory[self.position] = transition
+
+        self.priorities[self.position] = self.max_priority
+        self.position = (self.position + 1) % self.maxlen
+
+    def sample(self, sample_size: int, beta: float = 0.4):
+        if len(self.memory) == 0:
+            raise ValueError("Cannot sample from an empty replay memory.")
+
+        active_priorities = self.priorities[: len(self.memory)]
+        scaled_priorities = active_priorities ** self.alpha
+        probabilities = scaled_priorities / scaled_priorities.sum()
+
+        indices = self.rng.choice(
+            len(self.memory),
+            size=sample_size,
+            replace=len(self.memory) < sample_size,
+            p=probabilities,
+        )
+        transitions = [self.memory[index] for index in indices]
+
+        weights = (len(self.memory) * probabilities[indices]) ** (-beta)
+        weights = weights / weights.max()
+        weights = torch.tensor(weights, dtype=torch.float32)
+
+        return transitions, indices, weights
+
+    def update_priorities(self, indices, td_errors):
+        td_errors = np.asarray(td_errors, dtype=np.float32)
+        new_priorities = np.abs(td_errors) + self.priority_epsilon
+
+        for index, priority in zip(indices, new_priorities):
+            self.priorities[index] = priority
+
+        self.max_priority = max(self.max_priority, float(new_priorities.max()))
+
+    def __len__(self):
+        return len(self.memory)
+
+
 if __name__ == "__main__":
     # 下面是 ReplayMemory 的最小行为检查。
     # 这里先不用真实环境，只构造几条假的 transition。
@@ -83,3 +186,31 @@ if __name__ == "__main__":
     first_transition = batch[0]
     print("transition fields:", len(first_transition))
     assert len(first_transition) == 5
+
+    states, actions, next_states, rewards, dones = unpack_batch(batch)
+
+    print("states shape:", states.shape)
+    print("actions shape:", actions.shape)
+    print("next_states shape:", next_states.shape)
+    print("rewards shape:", rewards.shape)
+    print("dones shape:", dones.shape)
+
+    assert states.shape == (2, 12)
+    assert actions.shape == (2,)
+    assert next_states.shape == (2, 12)
+    assert rewards.shape == (2,)
+    assert dones.shape == (2,)
+
+    prioritized_memory = PrioritizedReplayMemory(maxlen=3, seed=0)
+    prioritized_memory.append((state, 0, next_state, 0.1, False))
+    prioritized_memory.append((state, 1, next_state, 0.1, False))
+    prioritized_memory.append((state, 0, next_state, -1.0, True))
+
+    per_batch, per_indices, per_weights = prioritized_memory.sample(2, beta=0.4)
+    print("prioritized sample size:", len(per_batch))
+    print("prioritized indices shape:", per_indices.shape)
+    print("prioritized weights shape:", per_weights.shape)
+
+    prioritized_memory.update_priorities(per_indices, [0.5, 1.5])
+    assert len(per_batch) == 2
+    assert per_weights.shape == (2,)

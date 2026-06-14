@@ -53,3 +53,67 @@ flappybird1:
   # 单局奖励达到这个值时提前停止该 episode。
   # 主要防止某些环境中 episode 无限持续。
   stop_on_reward: 100000
+
+flappybird2:
+  # 更强但仍保持教学可读性的 DQN 配置:
+  # Double DQN + Dueling DQN + Huber loss + gradient clipping。
+  env_id: FlappyBird-v0
+
+  env_make_params:
+    use_lidar: false
+
+  replay_memory_size: 100000
+  mini_batch_size: 64
+
+  epsilon_init: 1.0
+  epsilon_decay: 0.9995
+  epsilon_min: 0.05
+
+  discount_factor_g: 0.99
+
+  # target network 不要追 policy 太紧，否则 target 会跟着抖。
+  network_sync_rate: 1000
+
+  fc1_nodes: 512
+  learning_rate_a: 0.00025
+  stop_on_reward: 100000
+
+  enable_double_dqn: true
+  enable_dueling_dqn: true
+  loss_fn: smooth_l1
+  gradient_clip: 10.0
+
+flappybird3:
+  # Rainbow DQN 的轻量教学版:
+  # Double DQN + Dueling DQN + Prioritized Replay + 3-step return。
+  env_id: FlappyBird-v0
+
+  env_make_params:
+    use_lidar: false
+
+  replay_memory_size: 100000
+  mini_batch_size: 64
+
+  epsilon_init: 1.0
+  epsilon_decay: 0.9995
+  epsilon_min: 0.05
+
+  discount_factor_g: 0.99
+  network_sync_rate: 1000
+
+  fc1_nodes: 512
+  learning_rate_a: 0.00025
+  stop_on_reward: 100000
+
+  enable_double_dqn: true
+  enable_dueling_dqn: true
+  loss_fn: smooth_l1
+  gradient_clip: 10.0
+
+  enable_prioritized_replay: true
+  prioritized_replay_alpha: 0.6
+  prioritized_replay_beta_start: 0.4
+  prioritized_replay_beta_frames: 50000
+  prioritized_replay_epsilon: 0.00001
+
+  n_step_return: 3

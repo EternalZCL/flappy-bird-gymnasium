@@ -1,5 +1,23 @@
+import random
+
 import torch
 from torch import nn
+import torch.nn.functional as F
+
+
+def select_action(q_values: torch.Tensor, epsilon: float) -> int:
+    """根据 epsilon-greedy 规则选择动作。
+
+    epsilon 的含义:
+        random.random() < epsilon 时，随机选动作，用来探索。
+        否则选 Q 值最大的动作，用来利用当前网络的判断。
+    """
+    action_dim = q_values.shape[-1]
+
+    if random.random() < epsilon:
+        return random.randrange(action_dim)
+
+    return q_values.argmax().item()
 
 
 class DQN(nn.Module):
@@ -19,8 +37,15 @@ class DQN(nn.Module):
             action 1: flap
     """
 
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_dim: int = 128,
+        enable_dueling_dqn: bool = False,
+    ):
         super().__init__()
+        self.enable_dueling_dqn = enable_dueling_dqn
 
         # DQN 的核心思想是用神经网络近似 Q 函数:
         #     Q(s, a; theta)
@@ -28,26 +53,30 @@ class DQN(nn.Module):
         # 这里的 theta 就是神经网络里的所有可训练参数。
         # 当前模块只负责“给定 state，输出每个 action 的 Q 值”，
         # 真正的 value update 会在后面的 loss.backward() 和 optimizer.step() 里发生。
-        self.net = nn.Sequential(
+        if self.enable_dueling_dqn:
             # 第一层: 把 state_dim 个状态特征映射到 hidden_dim 个隐藏特征。
-            # 输入 shape:  [batch_size, state_dim]
-            # 输出 shape:  [batch_size, hidden_dim]
-            nn.Linear(state_dim, hidden_dim),
+            self.feature = nn.Linear(state_dim, hidden_dim)
 
-            # ReLU 是非线性激活函数。
-            # 如果没有非线性，多层 Linear 叠起来仍然只等价于一个 Linear，
-            # 网络表达能力会很弱。
-            nn.ReLU(),
-
-            # 输出层: 为每个动作输出一个 Q 值。
-            # 输入 shape:  [batch_size, hidden_dim]
-            # 输出 shape:  [batch_size, action_dim]
-            #
-            # 对 Flappy Bird 来说，输出可以理解为:
-            #     q_values[:, 0] = Q(state, do nothing)
-            #     q_values[:, 1] = Q(state, flap)
-            nn.Linear(hidden_dim, action_dim),
-        )
+            # Dueling DQN:
+            #   value(s) 负责判断“这个状态整体好不好”
+            #   advantage(s, a) 负责判断“每个动作相对其它动作好多少”
+            self.value_stream = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, 1),
+            )
+            self.advantage_stream = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, action_dim),
+            )
+        else:
+            # 普通 DQN 保留原来的 self.net 参数名，兼容旧 checkpoint。
+            self.net = nn.Sequential(
+                nn.Linear(state_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, action_dim),
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # forward 只做前向计算: state -> q_values。
@@ -56,12 +85,21 @@ class DQN(nn.Module):
         # 参数更新发生在训练步骤中:
         #     loss.backward()
         #     optimizer.step()
+        if self.enable_dueling_dqn:
+            features = F.relu(self.feature(x))
+            value = self.value_stream(features)
+            advantages = self.advantage_stream(features)
+            return value + advantages - advantages.mean(dim=1, keepdim=True)
+
         return self.net(x)
 
 
 if __name__ == "__main__":
     # 下面是这个模块的最小 shape 检查。
     # 先不用真实环境，只构造一批假的 12 维状态，确认网络输入输出维度正确。
+    random.seed(0)
+    torch.manual_seed(0)
+
     batch_size = 4
     state_dim = 12
     action_dim = 2
@@ -76,8 +114,30 @@ if __name__ == "__main__":
     # 表示每个状态都输出 2 个动作的 Q 值。
     q_values = model(states)
 
+    # 对每个 state，选 Q 值最大的那个动作。
+    # dim=1 表示在“动作维度”上取最大值:
+    #     q_values[i, 0] 是第 i 个 state 下 action 0 的 Q 值
+    #     q_values[i, 1] 是第 i 个 state 下 action 1 的 Q 值
+    best_actions = q_values.argmax(dim=1)
+
     print("states shape:", states.shape)
     print("q_values shape:", q_values.shape)
+    print("q_values:", q_values)
+    print("best actions:", best_actions)
+
+    # 只拿第 1 个 state 的 Q 值，演示 epsilon-greedy 怎么选动作。
+    first_state_q_values = q_values[0]
+
+    exploit_action = select_action(first_state_q_values, epsilon=0.0)
+    explore_actions = [
+        select_action(first_state_q_values, epsilon=1.0)
+        for _ in range(8)
+    ]
+
+    print("first state q_values:", first_state_q_values)
+    print("epsilon=0.0 selected action:", exploit_action)
+    print("epsilon=1.0 sampled actions:", explore_actions)
 
     # 如果输出维度不符合预期，直接报错，方便我们尽早发现接口问题。
     assert q_values.shape == (batch_size, action_dim)
+    assert best_actions.shape == (batch_size,)
