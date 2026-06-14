@@ -1,0 +1,55 @@
+# DQN 训练超参数配置。
+#
+# 这个文件先只放一个 Flappy Bird 低维状态版本的配置。
+# 后面如果要先用 CartPole 做快速验证，可以再加一个 cartpole 配置块。
+
+flappybird1:
+  # 环境 ID。这个环境来自本地安装的 ref/flappy-bird-gymnasium。
+  env_id: FlappyBird-v0
+
+  # 环境创建参数。
+  # use_lidar: false 表示不用 180 维 LIDAR，也不用图像 CNN，
+  # 而是使用 12 维低维状态特征。
+  env_make_params:
+    use_lidar: false
+
+  # ReplayMemory 最大容量。
+  # 容量越大，历史经验越丰富，但内存占用也更高。
+  replay_memory_size: 100000
+
+  # 每次 value update 从 ReplayMemory 中随机抽多少条经验。
+  # DQN 的训练通常用 mini-batch，而不是单条 transition。
+  mini_batch_size: 32
+
+  # epsilon-greedy 的初始探索概率。
+  # epsilon = 1.0 表示训练刚开始时 100% 随机动作。
+  epsilon_init: 1.0
+
+  # 每次训练后 epsilon 乘以这个系数，逐步减少随机探索。
+  # 例如 epsilon <- max(epsilon * epsilon_decay, epsilon_min)
+  epsilon_decay: 0.9995
+
+  # epsilon 的下限。
+  # 即使训练后期，也保留少量随机探索，避免策略完全僵死。
+  epsilon_min: 0.05
+
+  # 折扣因子 gamma。
+  # target_q = reward + gamma * max_a' Q_target(next_state, a')
+  # gamma 越接近 1，agent 越重视长期未来奖励。
+  discount_factor_g: 0.99
+
+  # policy network 同步到 target network 的步数间隔。
+  # 这个参数会在 target network 模块里真正用到。
+  network_sync_rate: 10
+
+  # DQN 隐藏层神经元数量。
+  # 低维状态输入不需要 CNN，先用一个简单 MLP。
+  fc1_nodes: 128
+
+  # Adam 优化器学习率。
+  # 学习率太大可能 Q 值震荡，太小则训练很慢。
+  learning_rate_a: 0.0001
+
+  # 单局奖励达到这个值时提前停止该 episode。
+  # 主要防止某些环境中 episode 无限持续。
+  stop_on_reward: 100000
